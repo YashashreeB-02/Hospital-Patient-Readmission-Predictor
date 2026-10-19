@@ -64,7 +64,7 @@ def _build_context_summary(patient_context):
 
     prob = patient_context.get("readmission_probability_percent", "N/A")
     risk = patient_context.get("risk_category", "N/A")
-    target_note = patient_context.get("prediction_target", "Recorded hospital readmission")
+    target_note = patient_context.get("prediction_target", "Recorded hospital readmission (binary classification)")
     factors = patient_context.get("existing_rule_based_flags", [])
     inputs = patient_context.get("patient_inputs", {})
 
@@ -86,7 +86,7 @@ def _build_context_summary(patient_context):
 def _generate_local_fallback_answer(patient_context, question, chat_history=None):
     """
     Provide an informative, distinct rule-based response for patient-specific
-    clinical questions when offline.
+    clinical questions when offline or when no API key is provided.
     """
     prob = patient_context.get("readmission_probability_percent", 50.0)
     risk = patient_context.get("risk_category", "Moderate Risk")
@@ -104,14 +104,14 @@ def _generate_local_fallback_answer(patient_context, question, chat_history=None
     ]):
         return f"""{header}
 
-### 📐 Model Architecture, Target & Limitations
+### 📐 Model Architecture, Target & Statistical Limitations
 
-- **Prediction Target Definition:** Binary classification of **any recorded hospital readmission** (both `<30` days and `>30` days) versus no readmission (`NO`) from the UCI 130-US Hospitals dataset. *(Note: This model is not restricted solely to 30-day early readmissions).*
+- **Prediction Target Definition:** Binary classification of **any recorded hospital readmission** (both `<30` days and `>30` days) versus no readmission (`NO`) from the UCI 130-US Hospitals dataset. *(Note: This model is an encounter-level classifier, not restricted solely to 30-day early readmissions).*
 - **Cohort Scale:** 99,343 eligible inpatient diabetes encounters after excluding expired and hospice patients.
 - **Model Algorithm:** Regularized Gradient Boosted Decision Trees (`HistGradientBoostingClassifier`, depth=6, lr=0.08, l2=0.8).
 - **Validation Metrics (20% Stratified Holdout Test Split):**
   * **Test Accuracy:** **63.54%** (Eliminated baseline Random Forest ~35% overfitting).
-  * **ROC-AUC Score:** **0.6828** (Strong discrimination across diverse patient sub-populations).
+  * **ROC-AUC Score:** **0.6828** (Consistent discrimination across patient sub-populations).
 - **Clinical Boundaries & Ethical Caveats:**
   * **Observational Data:** Data collected retrospectively (1999–2008); clinical diabetes standards have evolved.
   * **Correlation vs. Causation:** Identified feature importances represent statistical correlations, not direct causal medical etiology.
@@ -132,17 +132,17 @@ def _generate_local_fallback_answer(patient_context, question, chat_history=None
 
         med_analysis = []
         if ins in ["Up", "Down"]:
-            med_analysis.append(f"⚠️ **Active Insulin Titration ({ins}):** The patient's insulin regimen was actively adjusted during admission, signaling unstable blood glucose levels that require close post-discharge outpatient monitoring.")
+            med_analysis.append(f"⚠️ **Active Insulin Titration ({ins}):** The patient's insulin regimen was actively adjusted during admission, signaling unstable glycemic control that warrants close post-discharge outpatient monitoring.")
         elif ins == "Steady":
             med_analysis.append("✅ **Stable Insulin Regimen:** Patient remained on a stable insulin regimen without emergency dosage alterations during this encounter.")
         else:
             med_analysis.append("ℹ️ **No Insulin Prescribed:** Patient was managed via oral anti-hyperglycemic agents or non-insulin protocols.")
 
         if ch == "Ch":
-            med_analysis.append("⚠️ **Medication Regimen Change:** Active adjustments or drug additions occurred during hospitalization. Medication changes increase short-term readmission hazard due to potential patient confusion or adverse drug interactions.")
+            med_analysis.append("⚠️ **Medication Regimen Change:** Active adjustments or drug additions occurred during hospitalization, which historically elevates short-term readmission hazard.")
 
         if a1c in [">7", ">8"]:
-            med_analysis.append(f"⚠️ **Elevated HbA1c ({a1c}):** Indicates chronic suboptimal glycemic control prior to admission, compounding systemic vascular and metabolic vulnerability.")
+            med_analysis.append(f"⚠️ **Elevated HbA1c ({a1c}):** Indicates chronic suboptimal glycemic control prior to admission, compounding systemic metabolic vulnerability.")
         elif a1c == "Norm":
             med_analysis.append("✅ **Controlled HbA1c (Norm):** Long-term blood sugar levels were within normal ranges (<7%).")
         else:
@@ -225,7 +225,7 @@ def _generate_local_fallback_answer(patient_context, question, chat_history=None
         "summary", "overview", "classify", "classification"
     ]):
         factors_md = "\n".join(f"- {f}" for f in factors) if factors else "- General metabolic indicators are stable with no major warning flags."
-        delta = round(float(prob) - 47.0, 1)
+        delta = round(float(prob) - 47.13, 1)
         delta_str = f"+{delta}% above" if delta >= 0 else f"{delta}% below"
 
         return f"""{header}
@@ -233,7 +233,7 @@ def _generate_local_fallback_answer(patient_context, question, chat_history=None
 ### 🔍 Risk Stratification Summary & Clinical Drivers
 
 - **Assigned Risk Classification:** **{risk}**
-- **Calculated Readmission Probability:** **{prob}%** ({delta_str} cohort average baseline of 47%)
+- **Calculated Readmission Probability:** **{prob}%** ({delta_str} cohort average baseline of 47.13%)
 - **Primary Diagnosis Grouping:** `{inputs.get('diag_1_cat', 'Circulatory')}`
 - **Comorbidity Count:** `{inputs.get('number_diagnoses', 8)}` active diagnoses recorded
 
@@ -255,7 +255,8 @@ def _generate_local_fallback_answer(patient_context, question, chat_history=None
 - **Guidance:** You can ask dataset-level questions such as:
   * *"How many male and female patients are in the dataset?"*
   * *"Which age groups have the highest readmission rates?"*
-  * *"How do medications and insulin relate to readmission?"*"""
+  * *"How do medications and insulin relate to readmission?"*
+  * *"What percentage of patients were readmitted overall?"*"""
 
 
 def _generate_local_fallback_draft(patient_context):
@@ -314,15 +315,16 @@ CLINICIAN PRE-SEND VERIFICATION CHECKLIST:
     return draft.strip()
 
 
-def ask_about_prediction(patient_context, question, model_name=None, chat_history=None, api_key=None):
+def ask_about_prediction(patient_context, question, model_name=None, chat_history=None, api_key=None, df=None):
     """
     Data-driven conversational assistant:
     1. Distinguishes dataset questions (counts, percentages, cohorts, groups) from patient-specific questions.
     2. Executes exact Pandas calculations on diabetic_data.csv for dataset queries.
     3. Feeds verified data to OpenAI when active, or returns verified calculation directly when offline.
+    4. Ensures cohort inquiries never receive an unrelated patient prediction answer.
     """
     # Step 1: Check if this is a dataset-level query or unavailable column query
-    is_data_query, data_response_md, data_dict = handle_data_query(question, chat_history=chat_history)
+    is_data_query, data_response_md, data_dict = handle_data_query(question, chat_history=chat_history, df=df)
 
     key, model = get_api_config(override_key=api_key, override_model=model_name)
     has_live_llm = is_valid_api_key(key)
@@ -344,7 +346,8 @@ def ask_about_prediction(patient_context, question, model_name=None, chat_histor
             "2. You MUST use the exact numbers, counts, and percentages provided in the verified findings. Do not guess or invent statistics.\n"
             "3. Format your response cleanly using markdown tables and bullet points.\n"
             "4. Maintain conversational continuity and answer follow-up nuances from prior messages.\n"
-            "5. Distinguish correlation from clinical causation."
+            "5. Distinguish correlation from clinical causation.\n"
+            "6. Always state the cohort denominator and calculation formula."
         )
 
         messages = [
