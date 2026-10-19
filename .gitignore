@@ -1,5 +1,32 @@
+# Python bytecode and caches
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.class
+*.so
+.pytest_cache/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# OS-generated files
 .DS_Store
-.streamlit/
+Thumbs.db
+
+# Streamlit secrets and runtime files
+.streamlit/secrets.toml
+.streamlit/*.local.toml
+
+# Environment variables
+.env
+.env.*
+*.env
+
+# Local backups and temporary scratch files
+*.bak
+*.backup
+*pre_repair_bak*
+*.tmp
+*bak*
